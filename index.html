@@ -279,11 +279,63 @@ function loadDB(){
   try{ const d=JSON.parse(localStorage.getItem(DB_KEY)); if(d) return migrateDB(d); }catch(e){}
   return freshDB();
 }
-function saveDB(){ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
+function saveDB(optKey){
+  localStorage.setItem(DB_KEY, JSON.stringify(DB));
+  const k=optKey||(session&&session!=='__coach__'?session:null);
+  if(k&&DB.students[k]) saveStudentToSupabase(k);
+}
 let DB = loadDB();
 let session = null;          // current student username
 let onboardMsgs = [];        // onboarding conversation
 let viewingDay = null;       // day number being viewed in 今日 tab
+
+/* ---------- Supabase ---------- */
+let SUPA_URL='', SUPA_KEY='';
+async function supaFetch(path, method, body){
+  method=method||'GET';
+  const opts={method,headers:{'apikey':SUPA_KEY,'Authorization':'Bearer '+SUPA_KEY,'Content-Type':'application/json','Prefer':'return=minimal'}};
+  if(body) opts.body=JSON.stringify(body);
+  const res=await fetch(SUPA_URL+'/rest/v1/'+path,opts);
+  if(method==='GET'){ if(!res.ok) return []; return res.json(); }
+  return res.ok;
+}
+async function saveStudentToSupabase(username){
+  const s=DB.students[username]; if(!s||!SUPA_URL) return;
+  const row={username,name:s.name,password:s.password,onboarded:!!s.onboarded,
+    profile:s.profile||{},plan:s.plan||null,progress:s.progress||{},
+    overrides:s.overrides||{},chat:(s.chat||[]).slice(-30)};
+  try{
+    const exists=await supaFetch('students?username=eq.'+encodeURIComponent(username)+'&select=username');
+    if(exists&&exists.length) await supaFetch('students?username=eq.'+encodeURIComponent(username),'PATCH',row);
+    else await supaFetch('students','POST',row);
+  }catch(e){ console.warn('Supabase student save error:',e); }
+}
+async function deleteStudentFromSupabase(username){
+  if(!SUPA_URL) return;
+  try{ await supaFetch('students?username=eq.'+encodeURIComponent(username),'DELETE'); }catch(e){ console.warn('Supabase delete error:',e); }
+}
+async function saveCoachPasswordToSupabase(pwd){
+  if(!SUPA_URL) return;
+  try{ await supaFetch('settings?key=eq.coachPassword','PATCH',{value:pwd}); }catch(e){ console.warn('Supabase settings error:',e); }
+}
+async function loadAllFromSupabase(){
+  const [rows,sets]=await Promise.all([
+    supaFetch('students?select=*'),
+    supaFetch('settings?key=eq.coachPassword&select=value')
+  ]);
+  if(rows&&rows.length){
+    rows.forEach(r=>{
+      DB.students[r.username]={
+        name:r.name, password:r.password, onboarded:r.onboarded,
+        profile:r.profile||{}, plan:r.plan||null, progress:r.progress||{},
+        overrides:r.overrides||{}, chat:r.chat||[],
+        createdAt:r.created_at?new Date(r.created_at).getTime():Date.now()
+      };
+    });
+  }
+  if(sets&&sets.length) DB.coachPassword=sets[0].value;
+  localStorage.setItem(DB_KEY,JSON.stringify(DB));
+}
 
 /* ---------- Claude API ---------- */
 async function callClaude(messages, system, maxTokens){
@@ -1041,6 +1093,15 @@ function renderCoach(){
   <div class="wrap wide section-pad" id="coach-body"></div>`;
   if(coachView.mode==="detail" && DB.students[coachView.student]) renderCoachDetail();
   else { coachView.mode="list"; renderCoachList(); }
+  // Silently refresh all student data from Supabase in background
+  if(SUPA_URL){
+    loadAllFromSupabase().then(()=>{
+      if($("coach-body")){
+        if(coachView.mode==="detail"&&DB.students[coachView.student]) renderCoachDetail();
+        else renderCoachList();
+      }
+    }).catch(()=>{});
+  }
 }
 function renderCoachList(){
   const body=$("coach-body");
@@ -1133,11 +1194,11 @@ function renderCoachDetail(){
   }
   $("c-del").onclick=()=>{
     confirmModal(`确定删除学员「${s.name}」？所有计划和进度都会消失，无法恢复。`, ()=>{
-      delete DB.students[k]; saveDB(); coachView={mode:"list"}; renderCoach(); toast("已删除","ok");
+      delete DB.students[k]; saveDB(); deleteStudentFromSupabase(k); coachView={mode:"list"}; renderCoach(); toast("已删除","ok");
     }, {title:"删除学员", yes:"删除", danger:true});
   };
   $("c-resetpass").onclick=()=>{
-    promptModal("给 "+s.name+" 设定新密码", (np)=>{ s.password=np; saveDB(); toast("密码已重设","ok"); }, {title:"重设密码", password:true, placeholder:"新密码"});
+    promptModal("给 "+s.name+" 设定新密码", (np)=>{ s.password=np; saveDB(k); toast("密码已重设","ok"); }, {title:"重设密码", password:true, placeholder:"新密码"});
   };
 }
 function addStudentModal(){
@@ -1155,7 +1216,7 @@ function addStudentModal(){
     const key=name.toLowerCase();
     if(DB.students[key]){toast("已有同名学员","err");return;}
     DB.students[key]={name,password:pass,onboarded:false,profile:null,plan:null,progress:{},overrides:{},chat:[],createdAt:Date.now()};
-    saveDB(); m.remove(); renderCoachList(); toast("学员已创建","ok");
+    saveDB(key); m.remove(); renderCoachList(); toast("学员已创建","ok");
   };
 }
 function coachSettingsModal(){
@@ -1169,7 +1230,7 @@ function coachSettingsModal(){
     <button class="btn btn-ghost" onclick="this.closest('.modal-bg').remove()">关闭</button>`);
   $("cs-save").onclick=()=>{
     const p=($("cs-pass").value||"").trim(); if(!p){toast("请输入新密码","err");return;}
-    DB.coachPassword=p; saveDB(); toast("教练密码已更新","ok");
+    DB.coachPassword=p; saveDB(); saveCoachPasswordToSupabase(p); toast("教练密码已更新","ok");
   };
   bindApiConfig();
 }
@@ -1177,13 +1238,19 @@ function coachSettingsModal(){
 /* =========================================================================
    BOOT
    ========================================================================= */
-(function boot(){
+(async function boot(){
+  app.innerHTML=`<div style="min-height:100dvh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px">
+    <div class="loader-ring" style="width:52px;height:52px;border-width:5px"></div>
+    <p style="color:var(--muted);font-size:14px;font-family:var(--disp);font-weight:600">DINO BA 加载中…</p>
+  </div>`;
+  try{
+    const cfg=await fetch('/api/config').then(r=>r.json());
+    if(cfg.supabaseUrl&&cfg.supabaseKey){ SUPA_URL=cfg.supabaseUrl; SUPA_KEY=cfg.supabaseKey; }
+    if(SUPA_URL) await loadAllFromSupabase();
+  }catch(e){ console.warn('Supabase init failed, using local cache:',e); }
   try{ const ss=sessionStorage.getItem("dinoba_session"); if(ss) session=ss; }catch(e){}
   route();
-  // Register PWA Service Worker
-  if('serviceWorker' in navigator){
-    navigator.serviceWorker.register('/sw.js').catch(()=>{});
-  }
+  if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
 })();
 </script>
 </body>
