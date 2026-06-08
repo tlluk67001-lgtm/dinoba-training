@@ -1,6 +1,5 @@
 // api/db.js — Supabase proxy (Vercel Edge Function)
 // All database operations go through here. Keys stay on the server.
-// Deploy at: api/db.js in your GitHub repo.
 
 export const config = { runtime: 'edge' };
 
@@ -26,46 +25,36 @@ export default async function handler(req) {
     'apikey': SUPA_KEY,
     'Authorization': 'Bearer ' + SUPA_KEY,
     'Content-Type': 'application/json',
+    'Accept': 'application/json',
   };
 
   try {
     // ── Load all students + coach password ────────────────────────────────
     if (action === 'loadAll') {
       const [sRes, cRes] = await Promise.all([
-        fetch(base + '/students?select=*', { headers }),
+        fetch(base + '/students?select=*&order=created_at.asc', { headers }),
         fetch(base + '/settings?key=eq.coachPassword&select=value', { headers }),
       ]);
+      if (!sRes.ok) console.error('loadAll students error:', sRes.status, await sRes.text().catch(() => ''));
+      if (!cRes.ok) console.error('loadAll settings error:', cRes.status, await cRes.text().catch(() => ''));
       const students = sRes.ok ? await sRes.json() : [];
       const settings = cRes.ok ? await cRes.json() : [];
       return json({ students, settings });
     }
 
-    // ── Save (upsert) one student ─────────────────────────────────────────
+    // ── Upsert one student (insert or update by username) ─────────────────
     if (action === 'saveStudent') {
       const username = data.username;
       if (!username) return json({ error: 'Missing username' }, 400);
 
-      // Check if student already exists
-      const checkRes = await fetch(
-        base + '/students?username=eq.' + encodeURIComponent(username) + '&select=username',
-        { headers }
+      const res = await fetch(
+        base + '/students?on_conflict=username',
+        {
+          method: 'POST',
+          headers: { ...headers, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify(data),
+        }
       );
-      const existing = checkRes.ok ? await checkRes.json() : [];
-
-      let res;
-      if (existing.length > 0) {
-        // Update
-        res = await fetch(
-          base + '/students?username=eq.' + encodeURIComponent(username),
-          { method: 'PATCH', headers: { ...headers, 'Prefer': 'return=minimal' }, body: JSON.stringify(data) }
-        );
-      } else {
-        // Insert
-        res = await fetch(
-          base + '/students',
-          { method: 'POST', headers: { ...headers, 'Prefer': 'return=minimal' }, body: JSON.stringify(data) }
-        );
-      }
       const ok = res.ok;
       if (!ok) {
         const errText = await res.text().catch(() => '');
@@ -85,12 +74,20 @@ export default async function handler(req) {
       return json({ ok: res.ok });
     }
 
-    // ── Update coach password ─────────────────────────────────────────────
+    // ── Upsert coach password (insert if missing, update if exists) ───────
     if (action === 'saveCoachPassword') {
       const res = await fetch(
-        base + '/settings?key=eq.coachPassword',
-        { method: 'PATCH', headers: { ...headers, 'Prefer': 'return=minimal' }, body: JSON.stringify({ value: data.value }) }
+        base + '/settings?on_conflict=key',
+        {
+          method: 'POST',
+          headers: { ...headers, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify({ key: 'coachPassword', value: data.value }),
+        }
       );
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.error('saveCoachPassword error:', res.status, errText);
+      }
       return json({ ok: res.ok });
     }
 
