@@ -289,51 +289,44 @@ let session = null;          // current student username
 let onboardMsgs = [];        // onboarding conversation
 let viewingDay = null;       // day number being viewed in 今日 tab
 
-/* ---------- Supabase ---------- */
-let SUPA_URL='', SUPA_KEY='';
-async function supaFetch(path, method, body){
-  method=method||'GET';
-  const opts={method,headers:{'apikey':SUPA_KEY,'Authorization':'Bearer '+SUPA_KEY,'Content-Type':'application/json','Prefer':'return=minimal'}};
-  if(body) opts.body=JSON.stringify(body);
-  const res=await fetch(SUPA_URL+'/rest/v1/'+path,opts);
-  if(method==='GET'){ if(!res.ok) return []; return res.json(); }
-  return res.ok;
+/* ---------- Supabase (routed through /api/db — no keys in browser) ---------- */
+async function dbCall(action, data){
+  try{
+    const res=await fetch('/api/db',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action,data:data||{}})});
+    if(!res.ok){ console.warn('DB error',res.status,await res.text().catch(()=>'')); return null; }
+    return res.json();
+  }catch(e){ console.warn('DB call error:',e); return null; }
 }
 async function saveStudentToSupabase(username){
-  const s=DB.students[username]; if(!s||!SUPA_URL) return;
+  const s=DB.students[username]; if(!s) return;
   const row={username,name:s.name,password:s.password,onboarded:!!s.onboarded,
     profile:s.profile||{},plan:s.plan||null,progress:s.progress||{},
     overrides:s.overrides||{},chat:(s.chat||[]).slice(-30)};
-  try{
-    const exists=await supaFetch('students?username=eq.'+encodeURIComponent(username)+'&select=username');
-    if(exists&&exists.length) await supaFetch('students?username=eq.'+encodeURIComponent(username),'PATCH',row);
-    else await supaFetch('students','POST',row);
-  }catch(e){ console.warn('Supabase student save error:',e); }
+  dbCall('saveStudent',row); // fire and forget
 }
 async function deleteStudentFromSupabase(username){
-  if(!SUPA_URL) return;
-  try{ await supaFetch('students?username=eq.'+encodeURIComponent(username),'DELETE'); }catch(e){ console.warn('Supabase delete error:',e); }
+  dbCall('deleteStudent',{username});
 }
 async function saveCoachPasswordToSupabase(pwd){
-  if(!SUPA_URL) return;
-  try{ await supaFetch('settings?key=eq.coachPassword','PATCH',{value:pwd}); }catch(e){ console.warn('Supabase settings error:',e); }
+  dbCall('saveCoachPassword',{value:pwd});
 }
 async function loadAllFromSupabase(){
-  const [rows,sets]=await Promise.all([
-    supaFetch('students?select=*'),
-    supaFetch('settings?key=eq.coachPassword&select=value')
-  ]);
-  if(rows&&rows.length){
-    rows.forEach(r=>{
+  const result=await dbCall('loadAll');
+  if(!result) return;
+  const {students,settings}=result;
+  if(students&&students.length){
+    students.forEach(r=>{
       DB.students[r.username]={
-        name:r.name, password:r.password, onboarded:r.onboarded,
-        profile:r.profile||{}, plan:r.plan||null, progress:r.progress||{},
-        overrides:r.overrides||{}, chat:r.chat||[],
+        name:r.name,password:r.password,onboarded:r.onboarded,
+        profile:r.profile||{},plan:r.plan||null,progress:r.progress||{},
+        overrides:r.overrides||{},chat:r.chat||[],
         createdAt:r.created_at?new Date(r.created_at).getTime():Date.now()
       };
     });
   }
-  if(sets&&sets.length) DB.coachPassword=sets[0].value;
+  if(settings&&settings.length) DB.coachPassword=settings[0].value;
   localStorage.setItem(DB_KEY,JSON.stringify(DB));
 }
 
@@ -1094,7 +1087,7 @@ function renderCoach(){
   if(coachView.mode==="detail" && DB.students[coachView.student]) renderCoachDetail();
   else { coachView.mode="list"; renderCoachList(); }
   // Silently refresh all student data from Supabase in background
-  if(SUPA_URL){
+  {
     loadAllFromSupabase().then(()=>{
       if($("coach-body")){
         if(coachView.mode==="detail"&&DB.students[coachView.student]) renderCoachDetail();
@@ -1243,11 +1236,8 @@ function coachSettingsModal(){
     <div class="loader-ring" style="width:52px;height:52px;border-width:5px"></div>
     <p style="color:var(--muted);font-size:14px;font-family:var(--disp);font-weight:600">DINO BA 加载中…</p>
   </div>`;
-  try{
-    const cfg=await fetch('/api/config').then(r=>r.json());
-    if(cfg.supabaseUrl&&cfg.supabaseKey){ SUPA_URL=cfg.supabaseUrl; SUPA_KEY=cfg.supabaseKey; }
-    if(SUPA_URL) await loadAllFromSupabase();
-  }catch(e){ console.warn('Supabase init failed, using local cache:',e); }
+  try{ await loadAllFromSupabase(); }
+  catch(e){ console.warn('DB load failed, using local cache:',e); }
   try{ const ss=sessionStorage.getItem("dinoba_session"); if(ss) session=ss; }catch(e){}
   route();
   if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
