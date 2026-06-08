@@ -502,7 +502,7 @@ function doStudentLogin(){
     // new student self-signup
     DB.students[key] = { name, password:pass, onboarded:false, profile:null, plan:null,
       progress:{}, overrides:{}, chat:[], createdAt:Date.now() };
-    saveDB(); session = key; saveSession(); onboardMsgs=[]; route();
+    saveDB(key); session = key; saveSession(); onboardMsgs=[]; route();
   }
 }
 function doCoachLogin(){
