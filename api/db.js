@@ -29,6 +29,19 @@ export default async function handler(req) {
   };
 
   try {
+    // ── Diagnostic ping (for debugging only) ─────────────────────────────
+    if (action === 'ping') {
+      const urlOk = SUPA_URL.startsWith('https://');
+      const keyLen = SUPA_KEY.length;
+      try {
+        const r = await fetch(SUPA_URL + '/rest/v1/', { headers });
+        const body = await r.text().catch(() => '');
+        return json({ ok: true, urlOk, keyLen, status: r.status, body: body.slice(0, 200) });
+      } catch (e) {
+        return json({ ok: false, urlOk, keyLen, error: e.message, cause: String(e.cause ?? '') });
+      }
+    }
+
     // ── Load all students + coach password ────────────────────────────────
     if (action === 'loadAll') {
       const [sRes, cRes] = await Promise.all([
@@ -94,8 +107,9 @@ export default async function handler(req) {
     return json({ error: 'Unknown action: ' + action }, 400);
 
   } catch (e) {
-    console.error('DB proxy error:', e);
-    return json({ error: e.message }, 500);
+    const cause = e.cause ? String(e.cause) : '';
+    console.error('DB proxy error:', e.message, cause);
+    return json({ error: e.message, cause }, 500);
   }
 }
 
