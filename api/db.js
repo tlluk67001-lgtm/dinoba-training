@@ -1,121 +1,38 @@
-// api/db.js — Supabase proxy (Vercel Edge Function)
-// All database operations go through here. Keys stay on the server.
-
 export const config = { runtime: 'edge' };
 
 export default async function handler(req) {
   if (req.method !== 'POST') {
-    return json({ error: 'Method not allowed' }, 405);
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' }
+    });
   }
 
-  const SUPA_URL = process.env.SUPABASE_URL;
-  const SUPA_KEY = process.env.SUPABASE_ANON_KEY;
-
-  if (!SUPA_URL || !SUPA_KEY) {
-    return json({ error: 'Supabase not configured in environment variables' }, 500);
+  const SHEET_URL = process.env.GOOGLE_SHEET_URL;
+  if (!SHEET_URL) {
+    return new Response(JSON.stringify({ error: 'GOOGLE_SHEET_URL not configured' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   let body;
   try { body = await req.json(); }
-  catch { return json({ error: 'Invalid JSON' }, 400); }
-
-  const { action, data } = body;
-  const base = SUPA_URL + '/rest/v1';
-  const headers = {
-    'apikey': SUPA_KEY,
-    'Authorization': 'Bearer ' + SUPA_KEY,
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
+  catch { return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
+    status: 400, headers: { 'Content-Type': 'application/json' }
+  }); }
 
   try {
-    // ── Diagnostic ping (for debugging only) ─────────────────────────────
-    if (action === 'ping') {
-      const urlOk = SUPA_URL.startsWith('https://');
-      const keyLen = SUPA_KEY.length;
-      try {
-        const r = await fetch(SUPA_URL + '/rest/v1/', { headers });
-        const body = await r.text().catch(() => '');
-        return json({ ok: true, urlOk, keyLen, status: r.status, body: body.slice(0, 200) });
-      } catch (e) {
-        return json({ ok: false, urlOk, keyLen, error: e.message, cause: String(e.cause ?? '') });
-      }
-    }
-
-    // ── Load all students + coach password ────────────────────────────────
-    if (action === 'loadAll') {
-      const [sRes, cRes] = await Promise.all([
-        fetch(base + '/students?select=*&order=created_at.asc', { headers }),
-        fetch(base + '/settings?key=eq.coachPassword&select=value', { headers }),
-      ]);
-      if (!sRes.ok) console.error('loadAll students error:', sRes.status, await sRes.text().catch(() => ''));
-      if (!cRes.ok) console.error('loadAll settings error:', cRes.status, await cRes.text().catch(() => ''));
-      const students = sRes.ok ? await sRes.json() : [];
-      const settings = cRes.ok ? await cRes.json() : [];
-      return json({ students, settings });
-    }
-
-    // ── Upsert one student (insert or update by username) ─────────────────
-    if (action === 'saveStudent') {
-      const username = data.username;
-      if (!username) return json({ error: 'Missing username' }, 400);
-
-      const res = await fetch(
-        base + '/students?on_conflict=username',
-        {
-          method: 'POST',
-          headers: { ...headers, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify(data),
-        }
-      );
-      const ok = res.ok;
-      if (!ok) {
-        const errText = await res.text().catch(() => '');
-        console.error('saveStudent error:', res.status, errText);
-      }
-      return json({ ok, status: res.status });
-    }
-
-    // ── Delete one student ────────────────────────────────────────────────
-    if (action === 'deleteStudent') {
-      const username = data.username;
-      if (!username) return json({ error: 'Missing username' }, 400);
-      const res = await fetch(
-        base + '/students?username=eq.' + encodeURIComponent(username),
-        { method: 'DELETE', headers }
-      );
-      return json({ ok: res.ok });
-    }
-
-    // ── Upsert coach password (insert if missing, update if exists) ───────
-    if (action === 'saveCoachPassword') {
-      const res = await fetch(
-        base + '/settings?on_conflict=key',
-        {
-          method: 'POST',
-          headers: { ...headers, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify({ key: 'coachPassword', value: data.value }),
-        }
-      );
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        console.error('saveCoachPassword error:', res.status, errText);
-      }
-      return json({ ok: res.ok });
-    }
-
-    return json({ error: 'Unknown action: ' + action }, 400);
-
+    const res = await fetch(SHEET_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const text = await res.text();
+    return new Response(text, {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    });
   } catch (e) {
-    const cause = e.cause ? String(e.cause) : '';
-    console.error('DB proxy error:', e.message, cause);
-    return json({ error: e.message, cause }, 500);
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500, headers: { 'Content-Type': 'application/json' }
+    });
   }
-}
-
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
 }
