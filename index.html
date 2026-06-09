@@ -301,7 +301,7 @@ async function dbCall(action, data){
 }
 async function saveStudentToSupabase(username){
   const s=DB.students[username]; if(!s) return;
-  const row={username,name:s.name,password:s.password,onboarded:!!s.onboarded,
+  const row={username,name:s.name,password:s.password,phone:s.phone||"",onboarded:!!s.onboarded,
     profile:s.profile||{},plan:s.plan||null,progress:s.progress||{},
     overrides:s.overrides||{},chat:(s.chat||[]).slice(-30)};
   dbCall('saveStudent',row); // fire and forget
@@ -319,7 +319,7 @@ async function loadAllFromSupabase(){
   if(students&&students.length){
     students.forEach(r=>{
       DB.students[r.username]={
-        name:r.name,password:r.password,onboarded:r.onboarded,
+        name:r.name,password:r.password,phone:r.phone||"",onboarded:r.onboarded,
         profile:r.profile||{},plan:r.plan||null,progress:r.progress||{},
         overrides:r.overrides||{},chat:r.chat||[],
         createdAt:r.created_at?new Date(r.created_at).getTime():Date.now()
@@ -468,11 +468,17 @@ function renderLoginForm(){
       <div class="kicker o" style="margin-bottom:14px">Athlete Login</div>
       <div class="field"><label>名字</label><input id="li-name" placeholder="你的名字" autocomplete="off"></div>
       <div class="field"><label>密码</label><input id="li-pass" type="password" placeholder="密码"></div>
+      <div class="field" id="li-phone-wrap"><label>电话号码 <span class="muted" style="font-weight:400;text-transform:none">(新学员)</span></label><input id="li-phone" type="tel" placeholder="012-3456789"></div>
       <button class="btn btn-primary" id="li-go">进入训练 →</button>
       <div class="hr"></div>
       <p class="muted small">第一次来？输入名字 + 设定一个密码，恐龙教练会帮你定制计划。</p>`;
     $("li-go").onclick = doStudentLogin;
     $("li-pass").addEventListener("keydown",e=>{if(e.key==="Enter")doStudentLogin();});
+    // hide phone field when typing existing name
+    const nameEl=$("li-name"); if(nameEl) nameEl.addEventListener("input",()=>{
+      const k=(nameEl.value||"").trim().toLowerCase();
+      const wrap=$("li-phone-wrap"); if(wrap) wrap.style.display=DB.students[k]?"none":"";
+    });
   } else {
     box.innerHTML = `
       <div class="kicker" style="margin-bottom:14px">Coach Portal</div>
@@ -492,8 +498,8 @@ function doStudentLogin(){
     if(ex.password !== pass){ toast("密码不对哦","err"); return; }
     session = key; saveSession(); route();
   } else {
-    // new student self-signup
-    DB.students[key] = { name, password:pass, onboarded:false, profile:null, plan:null,
+    const phone = ($("li-phone")&&$("li-phone").value||"").trim();
+    DB.students[key] = { name, password:pass, phone, onboarded:false, profile:null, plan:null,
       progress:{}, overrides:{}, chat:[], createdAt:Date.now() };
     saveDB(key); session = key; saveSession(); onboardMsgs=[]; route();
   }
@@ -1030,9 +1036,10 @@ function renderSettings(body){
   <div class="fade-in">
     <div class="card" style="margin-bottom:16px">
       <div class="kicker">账户</div>
-      <p style="margin:10px 0"><b>${esc(s.name)}</b></p>
+      <p style="margin:10px 0"><b>${esc(s.name)}</b> ${s.phone?'<span class="muted small">· '+esc(s.phone)+'</span>':''}</p>
+      <div class="field"><label>修改电话号码</label><input id="st-phone" type="tel" placeholder="012-3456789" value="${esc(s.phone||'')}"></div>
       <div class="field"><label>修改密码</label><input id="st-pass" type="password" placeholder="新密码"></div>
-      <button class="btn btn-ghost auto" id="st-savepass">保存密码</button>
+      <button class="btn btn-ghost auto" id="st-savepass">保存资料</button>
     </div>
     <div class="card" style="margin-bottom:16px">
       <div class="kicker o">重新定制</div>
@@ -1041,8 +1048,12 @@ function renderSettings(body){
     </div>
   </div>`;
   $("st-savepass").onclick=()=>{
-    const p=($("st-pass").value||"").trim(); if(!p){toast("请输入新密码","err");return;}
-    s.password=p; saveDB(); $("st-pass").value=""; toast("密码已更新","ok");
+    const p=($("st-pass").value||"").trim();
+    const ph=($("st-phone")&&$("st-phone").value||"").trim();
+    if(ph) s.phone=ph;
+    if(p) s.password=p;
+    if(!p&&!ph){toast("请填写要修改的内容","err");return;}
+    saveDB(); if($("st-pass")) $("st-pass").value=""; toast("资料已更新","ok");
   };
   $("st-reset").onclick=()=>{
     confirmModal("确定要重做入队评估吗？目前的计划和进度会被清空。", ()=>{
@@ -1127,7 +1138,7 @@ function renderCoachList(){
     row.innerHTML=`
       <div class="avatar">${esc(initials(s.name))}</div>
       <div style="flex:1;min-width:0">
-        <div style="font-family:var(--disp);font-weight:700;font-size:16px">${esc(s.name)}</div>
+        <div style="font-family:var(--disp);font-weight:700;font-size:16px">${esc(s.name)} ${s.phone?'<span style="font-size:12px;color:var(--muted);font-weight:400">'+esc(s.phone)+'</span>':''}</div>
         <div style="margin:3px 0 5px">${ws}</div>
         <div class="progressbar"><i style="width:${pct}%"></i></div>
       </div>
@@ -1156,6 +1167,7 @@ function renderCoachDetail(){
       </div>
       <div class="hr"></div>
       <div class="small" style="line-height:2">
+        <div><span class="muted">电话：</span>${esc(s.phone||'—')}</div>
         <div><span class="muted">弱点：</span>${ws}</div>
         <div><span class="muted">器材：</span>${eq}</div>
         <div><span class="muted">每天时间：</span>${prof.dailyMinutes?esc(prof.dailyMinutes)+' 分钟':'—'} &nbsp; <span class="muted">体能：</span>${esc(prof.fitness||'—')}</div>
