@@ -1,38 +1,56 @@
+// api/db.js — Google Apps Script proxy with proper redirect handling
 export const config = { runtime: 'edge' };
 
 export default async function handler(req) {
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405, headers: { 'Content-Type': 'application/json' }
-    });
+    return resp({ error: 'Method not allowed' }, 405);
   }
 
   const SHEET_URL = process.env.GOOGLE_SHEET_URL;
-  if (!SHEET_URL) {
-    return new Response(JSON.stringify({ error: 'GOOGLE_SHEET_URL not configured' }), {
-      status: 500, headers: { 'Content-Type': 'application/json' }
-    });
-  }
+  if (!SHEET_URL) return resp({ error: 'GOOGLE_SHEET_URL not set in Vercel env vars' }, 500);
 
   let body;
   try { body = await req.json(); }
-  catch { return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-    status: 400, headers: { 'Content-Type': 'application/json' }
-  }); }
+  catch { return resp({ error: 'Invalid JSON' }, 400); }
 
   try {
-    const res = await fetch(SHEET_URL, {
+    // POST to Google Apps Script — use manual redirect so body isn't lost
+    const postRes = await fetch(SHEET_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      redirect: 'manual',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(body),
     });
-    const text = await res.text();
+
+    let text;
+
+    if (postRes.status >= 300 && postRes.status < 400) {
+      // Google Apps Script redirects to the actual response URL — follow with GET
+      const location = postRes.headers.get('location');
+      if (location) {
+        const getRes = await fetch(location);
+        text = await getRes.text();
+      } else {
+        text = await postRes.text();
+      }
+    } else {
+      text = await postRes.text();
+    }
+
+    // Return the response to the browser
     return new Response(text, {
-      status: 200, headers: { 'Content-Type': 'application/json' }
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
     });
+
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), {
-      status: 500, headers: { 'Content-Type': 'application/json' }
-    });
+    return resp({ error: e.message }, 500);
   }
+}
+
+function resp(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
